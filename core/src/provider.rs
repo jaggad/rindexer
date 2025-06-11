@@ -308,7 +308,7 @@ impl JsonRpcCachedProvider {
                 //
                 // We know they cannot be a valid native token transfer.
                 if let Some(to) = frame.result.to {
-                    Some(LocalizedTransactionTrace {
+                    let trace = LocalizedTransactionTrace {
                         trace: TransactionTrace {
                             action: Action::Call(CallAction {
                                 from: frame.result.from,
@@ -334,7 +334,9 @@ impl JsonRpcCachedProvider {
                         transaction_position: None, // not provided by debug_trace
                         block_number: Some(block_number.as_limbs()[0]),
                         block_hash: None, // not provided by debug_trace
-                    })
+                    };
+
+                    Some(trace)
                 } else {
                     None
                 }

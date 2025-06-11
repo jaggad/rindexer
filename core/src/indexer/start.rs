@@ -243,7 +243,7 @@ pub async fn start_indexing_traces(
             let config = config.clone();
             let native_transfer_consumer_handle = tokio::spawn(async move {
                 let initial_concurrent_requests = 1;
-                let limit_concurrent_requests = 200 / networks_count;
+                let limit_concurrent_requests = 300 / networks_count;
 
                 let mut max_concurrent_requests: usize = initial_concurrent_requests;
                 let mut buffer: Vec<U64> = Vec::with_capacity(max_concurrent_requests);
@@ -305,7 +305,7 @@ pub async fn start_indexing_traces(
                         // A random chance of increasing the request count helps us not overload
                         // the ratelimit too rapidly across multi-network trace indexing and have a
                         // slow ramp-up time.
-                        if rand::random_bool(0.05) {
+                        if rand::random_bool(0.1) {
                             max_concurrent_requests =
                                 (max_concurrent_requests + 1).min(limit_concurrent_requests);
                         }
