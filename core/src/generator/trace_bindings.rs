@@ -295,17 +295,14 @@ fn generate_trace_callback_structs_code(
                     // not having the right abi for example
                     // transfer events with 2 indexed topics cant decode
                     // transfer events with 3 indexed topics
-                    let result: Vec<{name}Result> = events
-                        .into_iter()
-                        .map(|item| {{
-                            {name}Result {{
-                                event_data: {name}Data {{
-                                    from: item.from,
-                                    to: item.to,
-                                    value: item.value,
-                                }},
-                                tx_information: item.tx_information,
-                            }}
+                    let result: Vec<{name}Result> = events.into_iter()
+                        .filter_map(|item| {{
+                            item.decoded_data.downcast::<{struct_data}>()
+                                .ok()
+                                .map(|arc| {struct_result} {{
+                                    event_data: (*arc).clone(),
+                                    tx_information: item.tx_information
+                                }})
                         }})
                         .collect();
 
@@ -321,6 +318,7 @@ fn generate_trace_callback_structs_code(
             } else {
                 ""
             },
+            struct_data = info.struct_data(),
             csv = if csv_enabled { r#"csv: Arc::new(csv),"# } else { "" },
             csv_generator = csv_generator,
             event_callback_events_len =
@@ -630,30 +628,92 @@ pub enum GenerateTraceBindingsError {
 
 /// Minimal changes by hardcoding the "mocked" native transfer Event abi as per erc20 standard.
 fn get_native_transfer_abi_items() -> Vec<ABIItem> {
-    vec![ABIItem {
-        inputs: vec![
-            ABIInput {
-                indexed: Some(true),
-                name: "from".to_string(),
-                type_: "address".to_string(),
-                components: None,
-            },
-            ABIInput {
-                indexed: Some(true),
-                name: "to".to_string(),
-                type_: "address".to_string(),
-                components: None,
-            },
-            ABIInput {
-                indexed: Some(false),
-                name: "value".to_string(),
-                type_: "uint256".to_string(),
-                components: None,
-            },
-        ],
-        name: "NativeTransfer".to_string(),
-        type_: "event".to_string(),
-    }]
+    vec![
+        ABIItem {
+            inputs: vec![
+                ABIInput {
+                    indexed: Some(true),
+                    name: "from".to_string(),
+                    type_: "address".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(true),
+                    name: "to".to_string(),
+                    type_: "address".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "value".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+            ],
+            name: "NativeTransfer".to_string(),
+            type_: "event".to_string(),
+        },
+        ABIItem {
+            inputs: vec![
+                ABIInput {
+                    indexed: Some(true),
+                    name: "from".to_string(),
+                    type_: "address".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(true),
+                    name: "to".to_string(),
+                    type_: "address".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "value".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "block_timestamp".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "nonce".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "gas".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "gasPrice".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "maxFeePerGas".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "maxPriorityFeePerGas".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+            ],
+            name: "RawTransaction".to_string(),
+            type_: "event".to_string(),
+        },
+    ]
 }
 
 pub fn generate_trace_bindings(

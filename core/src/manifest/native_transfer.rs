@@ -20,6 +20,8 @@ pub enum TraceProcessingMethod {
     TraceBlock,
     #[serde(rename = "debug_traceBlockByNumber")]
     DebugTraceBlockByNumber,
+    #[serde(rename = "eth_getBlockByNumber")]
+    EthGetBlockByNumber,
 }
 
 /// Deserialize a number or string into a U64. This is required for the untagged deserialize of

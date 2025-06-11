@@ -25,7 +25,7 @@ use alloy::{
     },
 };
 use alloy_chains::{Chain, NamedChain};
-use futures::future::try_join_all;
+use futures::future::{join_all, try_join_all};
 use log::debug;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -54,6 +54,7 @@ pub type RindexerProvider = FillProvider<
 #[derive(Debug)]
 pub struct JsonRpcCachedProvider {
     provider: Arc<RindexerProvider>,
+    client: RpcClient,
     cache: Mutex<Option<(Instant, Arc<Block>)>>,
     is_zk_chain: bool,
     #[allow(unused)]
@@ -156,6 +157,7 @@ fn is_known_zk_evm_compatible_chain(chain: Chain) -> Option<bool> {
 impl JsonRpcCachedProvider {
     pub async fn new(
         provider: RindexerProvider,
+        client: RpcClient,
         chain_id: u64,
         block_poll_frequency: Option<BlockPollFrequency>,
         max_block_range: Option<U64>,
@@ -178,6 +180,7 @@ impl JsonRpcCachedProvider {
         JsonRpcCachedProvider {
             provider: Arc::new(provider),
             cache: Mutex::new(None),
+            client,
             max_block_range,
             chain,
             chain_id,
@@ -346,6 +349,32 @@ impl JsonRpcCachedProvider {
         Ok(traces)
     }
 
+    /// Fetch blocks in a batch rpc call
+    pub async fn get_block_by_number_batch(
+        &self,
+        block_numbers: &[U64],
+        include_txs: bool,
+    ) -> Result<Vec<Block>, ProviderError> {
+        if block_numbers.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut batch = self.client.new_batch();
+        let mut request_futures = Vec::new();
+
+        for &block_num in block_numbers {
+            let params = (BlockNumberOrTag::Number(block_num.as_limbs()[1]), include_txs);
+            let call = batch.add_call("eth_getBlockByNumber", &params)?;
+            request_futures.push(call);
+        }
+
+        // Send the batch
+        let _ = batch.send().await;
+        let results = try_join_all(request_futures).await?;
+
+        Ok(results)
+    }
+
     /// Request `trace_block` information. This currently does not support batched multi-calls.
     pub async fn trace_block(
         &self,
@@ -412,10 +441,17 @@ pub async fn create_client(
     let http = Http::with_client(client_with_auth, rpc_url);
     let retry_layer = RetryBackoffLayer::new(5000, 500, compute_units_per_second.unwrap_or(660));
     let rpc_client = RpcClient::builder().layer(retry_layer).transport(http, false);
-    let provider = ProviderBuilder::new().connect_client(rpc_client);
+    let provider = ProviderBuilder::new().connect_client(rpc_client.clone());
 
     Ok(Arc::new(
-        JsonRpcCachedProvider::new(provider, chain_id, block_poll_frequency, max_block_range).await,
+        JsonRpcCachedProvider::new(
+            provider,
+            rpc_client,
+            chain_id,
+            block_poll_frequency,
+            max_block_range,
+        )
+        .await,
     ))
 }
 

@@ -31,34 +31,90 @@ pub const NATIVE_TRANSFER_CONTRACT_NAME: &str = "EvmTraces";
 /// with the streams and sinks to which rindexer writes.
 pub const EVENT_NAME: &str = "NativeTransfer";
 
-/// Invent an ABI to mimic an ERC0 Transfer.
+/// Invent an ABI to mimic an ERC-20 Transfer.
 ///
 /// This will allow indexer consumers, which will typically be configured to consume contract events
 /// to simply ingest an ERC20 compatible event for the native tokens.
 ///
 /// In order to reduce name conflicts we will call the Transfer event `NativeTransfer`.
-pub const NATIVE_TRANSFER_ABI: &str = r#"[{
+pub const NATIVE_TRANSFER_ABI: &str = r#"
+[
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "name": "from",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "name": "to",
+                "type": "address"
+            },
+            {
+                "indexed": false,
+                "name": "value",
+                "type": "uint256"
+            }
+        ],
+        "name": "NativeTransfer",
+        "type": "event"
+    },
+    {
     "anonymous": false,
-    "inputs": [
-        {
-            "indexed": true,
-            "name": "from",
-            "type": "address"
-        },
-        {
-            "indexed": true,
-            "name": "to",
-            "type": "address"
-        },
-        {
-            "indexed": false,
-            "name": "value",
-            "type": "uint256"
-        }
-    ],
-    "name": "NativeTransfer",
-    "type": "event"
-}]"#;
+        "inputs": [
+            {
+                "indexed": true,
+                "name": "from",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "name": "to",
+                "type": "address"
+            },
+            {
+                "indexed": false,
+                "name": "value",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "name": "block_timestamp",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "name": "nonce",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "name": "gas",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "name": "gasPrice",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "name": "maxFeePerGas",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "name": "maxPriorityFeePerGas",
+                "type": "uint256"
+            }
+        ],
+        "name": "RawTransaction",
+        "type": "event"
+    }
+]
+"#;
 
 /// Refer to [`NATIVE_TRANSFER_ABI`] as an imaginary associated ABI for this Native Transfer
 /// "event" struct.
@@ -149,10 +205,12 @@ async fn provider_call(
     config: &TraceProcessingConfig,
     block: U64,
 ) -> Result<Vec<LocalizedTransactionTrace>, ProviderError> {
-    if config.method == TraceProcessingMethod::TraceBlock {
-        provider.trace_block(block).await
-    } else {
-        provider.debug_trace_block_by_number(block).await
+    match config.method {
+        TraceProcessingMethod::TraceBlock => provider.trace_block(block).await,
+        TraceProcessingMethod::DebugTraceBlockByNumber => {
+            provider.debug_trace_block_by_number(block).await
+        }
+        _ => unimplemented!("Unsupported trace method"),
     }
 }
 
