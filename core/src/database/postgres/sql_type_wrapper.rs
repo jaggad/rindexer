@@ -513,13 +513,13 @@ impl ToSql for EthereumSqlTypeWrapper {
     ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
         match self {
             EthereumSqlTypeWrapper::U64(value) => {
-                Decimal::to_sql(&Decimal::from(value.as_limbs()[0]), ty, out)
+                Decimal::to_sql(&Decimal::from(value.to::<u64>()), ty, out)
             }
             EthereumSqlTypeWrapper::U64Nullable(value) => {
                 if value.is_zero() {
                     return Ok(IsNull::Yes);
                 }
-                Decimal::to_sql(&Decimal::from(value.as_limbs()[0]), ty, out)
+                Decimal::to_sql(&Decimal::from(value.to::<u64>()), ty, out)
             }
             EthereumSqlTypeWrapper::I64(value) => value.to_sql(ty, out),
             EthereumSqlTypeWrapper::VecU64(values) => Self::serialize_vec_decimal(values, ty, out),
@@ -1124,7 +1124,7 @@ fn low_u128_from_int(value: &I256) -> u128 {
 }
 
 fn low_u32(value: &U256) -> u32 {
-    value.as_limbs()[0] as u32
+    value.to()
 }
 
 fn as_u64(value: &U256) -> u64 {

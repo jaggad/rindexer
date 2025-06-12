@@ -1,7 +1,7 @@
 use std::{any::Any, sync::Arc, time::Duration};
 
 use alloy::consensus::Transaction as _;
-use alloy::network::TransactionResponse;
+use alloy::network::{AnyRpcTransaction, TransactionResponse};
 use alloy::rpc::types::{Block, Transaction};
 use alloy::{
     primitives::{Address, BlockHash, Bytes, TxHash, B256, U256, U64},
@@ -273,7 +273,7 @@ impl TraceResult {
 
     /// Create a "NativeTransfer" TraceResult from a `eth_getBlockByNumber` Transaction.
     pub fn new_native_transfer(
-        tx: Transaction,
+        tx: AnyRpcTransaction,
         ts: u64,
         to: Address,
         network: &str,
@@ -307,7 +307,7 @@ impl TraceResult {
 
     /// Create a "NativeTransfer" TraceResult for sinking and streaming.
     pub fn new_raw_transaction(
-        tx: &Transaction,
+        tx: &AnyRpcTransaction,
         ts: u64,
         network: &str,
         start_block: U64,
@@ -343,7 +343,6 @@ impl TraceResult {
             found_in_request: LogFoundInRequest { from_block: start_block, to_block: end_block },
         }
     }
-
 }
 
 pub type TraceCallbackResult<T> = Result<T, String>;

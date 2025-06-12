@@ -414,18 +414,22 @@ pub async fn native_transfer_block_consumer(
         .iter()
         .fold((U64::MAX, U64::ZERO), |(min, max), &num| (min.min(num), max.max(num)));
 
-    // let raw_transactions = blocks
-    //     .clone()
-    //     .into_iter()
-    //     .flat_map(|b| b.transactions.into_transactions().map(move |tx| (b.header.timestamp, tx)))
-    //     .map(|(ts, tx)| {
-    //         TraceResult::new_raw_transaction(&tx, ts, network_name, from_block, to_block)
-    //     })
-    //     .collect::<Vec<_>>();
+    let raw_transactions = blocks
+        .clone()
+        .into_iter()
+        .flat_map(|b| {
+            b.transactions.clone().into_transactions().map(move |tx| (b.header.timestamp, tx))
+        })
+        .map(|(ts, tx)| {
+            TraceResult::new_raw_transaction(&tx, ts, network_name, from_block, to_block)
+        })
+        .collect::<Vec<_>>();
 
     let native_transfers = blocks
         .into_iter()
-        .flat_map(|b| b.transactions.into_transactions().map(move |tx| (b.header.timestamp, tx)))
+        .flat_map(|b| {
+            b.transactions.clone().into_transactions().map(move |tx| (b.header.timestamp, tx))
+        })
         .filter_map(|(ts, tx)| {
             let is_empty_input = tx.input().is_empty();
             let is_value_zero = tx.value().is_zero();
@@ -458,7 +462,7 @@ pub async fn native_transfer_block_consumer(
 
         match config.event_name.as_str() {
             "NativeTransfer" => config.trigger_event(native_transfers.clone()).await,
-            // "RawTransaction" => config.trigger_event(raw_transactions.clone()).await,
+            "RawTransaction" => config.trigger_event(raw_transactions.clone()).await,
             _ => unimplemented!("Unsupported event name"),
         }
 

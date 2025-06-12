@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::indexer::native_transfer::get_native_transfer_abi_items;
 use crate::{
     abi::{
         ABIInput, ABIItem, CreateCsvFileForEvent, EventInfo, GenerateAbiPropertiesType,
@@ -19,7 +20,6 @@ use crate::{
     },
     types::code::Code,
 };
-use crate::indexer::native_transfer::get_native_transfer_abi_items;
 
 pub fn trace_abigen_contract_name(contract_name: &str) -> String {
     format!("Rindexer{}Gen", contract_name)
@@ -351,7 +351,7 @@ fn generate_trace_callback_structs_code(
 fn decoder_contract_fn(contracts_details: Vec<NativeTransferDetails>, abi_gen_name: &str) -> Code {
     let mut function = String::new();
     function.push_str(&format!(
-        r#"pub async fn decoder_contract(network: &str) -> {abi_gen_name}Instance<Arc<RindexerProvider>> {{"#,
+        r#"pub async fn decoder_contract(network: &str) -> {abi_gen_name}Instance<Arc<RindexerProvider>, AnyNetwork> {{"#,
         abi_gen_name = abi_gen_name
     ));
 
@@ -396,7 +396,7 @@ fn build_pub_contract_fn(
     let contract_name = camel_to_snake(contract_name);
 
     Code::new(format!(
-        r#"pub async fn {contract_name}_contract(network: &str, address: Address) -> {abi_gen_name}Instance<Arc<RindexerProvider>> {{
+        r#"pub async fn {contract_name}_contract(network: &str, address: Address) -> {abi_gen_name}Instance<Arc<RindexerProvider>, AnyNetwork> {{
                 {abi_gen_name}::new(
                     address,
                     get_provider_cache_for_network(network).await.get_inner_provider(),
@@ -448,6 +448,7 @@ fn generate_trace_bindings_code(
         use std::collections::HashMap;
         use std::pin::Pin;
         use std::path::{{Path, PathBuf}};
+        use alloy::network::AnyNetwork;
         use alloy::primitives::{{Address, Bytes, B256}};
         use alloy::sol_types::{{SolEvent, SolEventInterface, SolType}};
         use rindexer::{{
@@ -654,7 +655,6 @@ pub enum GenerateTraceBindingsError {
     #[error("{0}")]
     ParamType(#[from] ParamTypeError),
 }
-
 
 pub fn generate_trace_bindings(
     project_path: &Path,

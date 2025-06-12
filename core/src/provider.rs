@@ -1,3 +1,5 @@
+use alloy::network::{AnyNetwork, AnyRpcBlock, AnyTransactionReceipt};
+use alloy::rpc::types::TransactionReceipt;
 use alloy::{
     eips::{BlockId, BlockNumberOrTag},
     primitives::{Address, Bytes, TxHash, U256, U64},
@@ -28,20 +30,22 @@ use alloy_chains::{Chain, NamedChain};
 use futures::future::{join_all, try_join_all};
 use log::debug;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::future::IntoFuture;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use alloy::rpc::types::TransactionReceipt;
 use thiserror::Error;
 use tokio::sync::Mutex;
+use tokio::task::JoinError;
 use tracing::{debug_span, error, Instrument};
 use url::Url;
 
 use crate::manifest::network::BlockPollFrequency;
 use crate::{event::RindexerEventFilter, manifest::core::Manifest};
+
+const CHUNK_SIZE: usize = 1000;
 
 /// An alias type for a complex alloy Provider
 pub type RindexerProvider = FillProvider<
@@ -49,14 +53,15 @@ pub type RindexerProvider = FillProvider<
         Identity,
         JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
     >,
-    RootProvider,
+    RootProvider<AnyNetwork>,
+    AnyNetwork,
 >;
 
 #[derive(Debug)]
 pub struct JsonRpcCachedProvider {
     provider: Arc<RindexerProvider>,
     client: RpcClient,
-    cache: Mutex<Option<(Instant, Arc<Block>)>>,
+    cache: Mutex<Option<(Instant, Arc<AnyRpcBlock>)>>,
     is_zk_chain: bool,
     #[allow(unused)]
     chain_id: u64,
@@ -69,6 +74,9 @@ pub struct JsonRpcCachedProvider {
 pub enum ProviderError {
     #[error("Failed to make rpc request: {0}")]
     RequestFailed(#[from] RpcError<TransportErrorKind>),
+
+    #[error("Failed to make batched rpc request: {0}")]
+    BatchRequestFailed(#[from] JoinError),
 
     #[error("Failed to serialize rpc request data: {0}")]
     SerializationError(#[from] serde_json::Error),
@@ -213,7 +221,7 @@ impl JsonRpcCachedProvider {
         }
     }
 
-    pub async fn get_latest_block(&self) -> Result<Option<Arc<Block>>, ProviderError> {
+    pub async fn get_latest_block(&self) -> Result<Option<Arc<AnyRpcBlock>>, ProviderError> {
         let mut cache_guard = self.cache.lock().await;
         let cache_time = self.block_poll_frequency();
 
@@ -350,28 +358,63 @@ impl JsonRpcCachedProvider {
         Ok(traces)
     }
 
-    /// Fetch blocks in a batch rpc call
+    /// Fetches blocks in concurrent batches of 1000.
+    ///
+    /// # Arguments
+    ///
+    /// * `block_numbers`: A slice of block numbers to fetch.
+    /// * `include_txs`: A boolean indicating whether to include full transaction objects.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a vector of `AnyRpcBlock` or a `ProviderError`.
     pub async fn get_block_by_number_batch(
         &self,
         block_numbers: &[U64],
         include_txs: bool,
-    ) -> Result<Vec<Block>, ProviderError> {
+    ) -> Result<Vec<AnyRpcBlock>, ProviderError> {
         if block_numbers.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut batch = self.client.new_batch();
-        let mut request_futures = Vec::new();
+        // Create a vector of futures, where each future processes one chunk.
+        let futures = block_numbers
+            .chunks(CHUNK_SIZE)
+            .map(|chunk| {
+                // Clone the client for each concurrent task. Arc makes this cheap.
+                let client = self.client.clone();
+                let owned_chunk = chunk.to_vec();
 
-        for &block_num in block_numbers {
-            let params = (BlockNumberOrTag::Number(block_num.as_limbs()[0]), include_txs);
-            let call = batch.add_call("eth_getBlockByNumber", &params)?;
-            request_futures.push(call);
-        }
+                // Spawn a new asynchronous task for each chunk.
+                tokio::spawn(async move {
+                    let mut batch = client.new_batch();
+                    let mut request_futures = Vec::with_capacity(owned_chunk.len());
 
-        // Send the batch
-        let _ = batch.send().await;
-        let results = try_join_all(request_futures).await?;
+                    for block_num in owned_chunk {
+                        let params = (BlockNumberOrTag::Number(block_num.to()), include_txs);
+                        let call = batch.add_call("eth_getBlockByNumber", &params)?;
+                        request_futures.push(call)
+                    }
+
+                    // Send the batch request.
+                    if let Err(e) = batch.send().await {
+                        error!("Failed to send batch request: {:?}", e);
+                        return Err(e.into());
+                    }
+
+                    // Await all the individual call futures in the batch.
+                    try_join_all(request_futures).await
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let chunk_results: Vec<Result<Vec<AnyRpcBlock>, _>> = try_join_all(futures).await?;
+        let results = chunk_results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
 
         Ok(results)
     }
@@ -380,22 +423,55 @@ impl JsonRpcCachedProvider {
     pub async fn get_tx_receipts_batch(
         &self,
         hashes: &[TxHash],
-    ) -> Result<Vec<TransactionReceipt>, ProviderError> {
+    ) -> Result<Vec<AnyTransactionReceipt>, ProviderError> {
         if hashes.is_empty() {
             return Ok(Vec::new());
         }
-        
-        let mut batch = self.client.new_batch();
-        let mut request_futures = Vec::new();
 
-        for hash in hashes {
-            let call = batch.add_call("eth_getTransactionReceipt", &(hash))?;
-            request_futures.push(call);
-        }
+        // Create a vector of futures, where each future processes one chunk.
+        let futures = hashes
+            .chunks(CHUNK_SIZE)
+            .map(|chunk| {
+                // Clone the client for each concurrent task. Arc makes this cheap.
+                let client = self.client.clone();
+                let owned_chunk = chunk.to_vec();
 
-        // Send the batch
-        let _ = batch.send().await;
-        let results = try_join_all(request_futures).await?;
+                // Spawn a new asynchronous task for each chunk.
+                tokio::spawn(async move {
+                    let mut batch = client.new_batch();
+                    let mut request_futures = Vec::with_capacity(owned_chunk.len());
+
+                    for hash in owned_chunk {
+                        let call = batch.add_call(
+                            "eth_getTransactionReceipt",
+                            &(
+                                hash,
+                                /* one element tuple from dangling comma */
+                            ),
+                        )?;
+                        request_futures.push(call)
+                    }
+
+                    // Send the batch request.
+                    if let Err(e) = batch.send().await {
+                        error!("Failed to send batch request: {:?}", e);
+                        return Err(e.into());
+                    }
+
+                    // Await all the individual call futures in the batch.
+                    try_join_all(request_futures).await
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let chunk_results: Vec<Result<Vec<AnyTransactionReceipt>, _>> =
+            try_join_all(futures).await?;
+        let results = chunk_results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
 
         Ok(results)
     }
@@ -466,7 +542,8 @@ pub async fn create_client(
     let http = Http::with_client(client_with_auth, rpc_url);
     let retry_layer = RetryBackoffLayer::new(5000, 500, compute_units_per_second.unwrap_or(660));
     let rpc_client = RpcClient::builder().layer(retry_layer).transport(http, false);
-    let provider = ProviderBuilder::new().connect_client(rpc_client.clone());
+    let provider =
+        ProviderBuilder::new().network::<AnyNetwork>().connect_client(rpc_client.clone());
 
     Ok(Arc::new(
         JsonRpcCachedProvider::new(

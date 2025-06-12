@@ -14,6 +14,7 @@ use tokio_postgres::types::Type as PgType;
 use tracing::{debug, error, info, warn};
 
 use super::native_transfer::{NativeTransfer, NATIVE_TRANSFER_ABI, NATIVE_TRANSFER_CONTRACT_NAME};
+use crate::event::callback_registry::TraceResultData;
 use crate::{
     abi::{ABIItem, CreateCsvFileForEvent, EventInfo, ParamTypeError, ReadAbiError},
     chat::ChatClients,
@@ -50,7 +51,6 @@ use crate::{
     types::core::LogParam,
     AsyncCsvAppender, FutureExt, IndexingDetails, StartDetails, StartNoCodeDetails,
 };
-use crate::event::callback_registry::TraceResultData;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SetupNoCodeError {
@@ -274,11 +274,9 @@ fn no_code_callback(params: Arc<NoCodeCallbackParams>) -> EventCallbacks {
                 CallbackResult::Trace(events) => events
                     .into_iter()
                     .cloned()
-                    .filter_map(|item| {
-                        match item.data {
-                            TraceResultData::NativeTransfer(data) => Some((data, item.tx_information)),
-                            TraceResultData::RawTransaction(_) => None
-                        }
+                    .filter_map(|item| match item.data {
+                        TraceResultData::NativeTransfer(data) => Some((data, item.tx_information)),
+                        TraceResultData::RawTransaction(_) => None,
                     })
                     .map(|(result, tx_information)| {
                         let log_params = vec![
