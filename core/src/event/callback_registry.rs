@@ -222,8 +222,14 @@ impl EventCallbackRegistry {
 // --------------------------------
 
 #[derive(Debug, Clone)]
+pub enum TraceResultData {
+    NativeTransfer(NativeTransfer),
+    RawTransaction(RawTransaction),
+}
+
+#[derive(Debug, Clone)]
 pub struct TraceResult {
-    pub decoded_data: Arc<dyn Any + Send + Sync>,
+    pub data: TraceResultData,
     pub tx_information: TxInformation,
     pub found_in_request: LogFoundInRequest,
 }
@@ -245,7 +251,7 @@ impl TraceResult {
         }
 
         Self {
-            decoded_data: Arc::new(NativeTransfer {
+            data: TraceResultData::NativeTransfer(NativeTransfer {
                 from: action.from,
                 to: action.to,
                 value: action.value,
@@ -275,7 +281,11 @@ impl TraceResult {
         end_block: U64,
     ) -> Self {
         Self {
-            decoded_data: Arc::new(NativeTransfer { to, from: tx.from(), value: tx.value() }),
+            data: TraceResultData::NativeTransfer(NativeTransfer {
+                to,
+                from: tx.from(),
+                value: tx.value(),
+            }),
             tx_information: TxInformation {
                 network: network.to_string(),
                 address: Address::ZERO,
@@ -304,16 +314,16 @@ impl TraceResult {
         end_block: U64,
     ) -> Self {
         Self {
-            decoded_data: Arc::new(RawTransaction {
+            data: TraceResultData::RawTransaction(RawTransaction {
                 from: tx.from(),
-                to: tx.to(),
+                to: tx.to().unwrap_or(Address::ZERO),
                 value: tx.value(),
                 block_timestamp: ts,
                 nonce: tx.nonce(),
                 gas: tx.gas_limit(), // TODO: Unsure if correct mapping
-                gas_price: TransactionResponse::gas_price(tx),
-                max_fee_per_gas: TransactionResponse::max_fee_per_gas(tx),
-                max_priority_fee_per_gas: tx.max_priority_fee_per_gas(),
+                gas_price: TransactionResponse::gas_price(tx).unwrap_or(0),
+                max_fee_per_gas: TransactionResponse::max_fee_per_gas(tx).unwrap_or(0),
+                max_priority_fee_per_gas: tx.max_priority_fee_per_gas().unwrap_or(0),
             }),
             tx_information: TxInformation {
                 network: network.to_string(),
@@ -322,7 +332,7 @@ impl TraceResult {
                     .block_number
                     .map(U64::from)
                     .expect("block_number should be present"),
-                block_timestamp: None,
+                block_timestamp: Some(U256::from(ts)),
                 transaction_hash: tx.tx_hash(),
                 block_hash: tx.block_hash.expect("block_hash should be present"),
                 transaction_index: U64::from(
@@ -333,6 +343,7 @@ impl TraceResult {
             found_in_request: LogFoundInRequest { from_block: start_block, to_block: end_block },
         }
     }
+
 }
 
 pub type TraceCallbackResult<T> = Result<T, String>;

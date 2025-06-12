@@ -34,6 +34,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use alloy::rpc::types::TransactionReceipt;
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::{debug_span, error, Instrument};
@@ -365,6 +366,30 @@ impl JsonRpcCachedProvider {
         for &block_num in block_numbers {
             let params = (BlockNumberOrTag::Number(block_num.as_limbs()[0]), include_txs);
             let call = batch.add_call("eth_getBlockByNumber", &params)?;
+            request_futures.push(call);
+        }
+
+        // Send the batch
+        let _ = batch.send().await;
+        let results = try_join_all(request_futures).await?;
+
+        Ok(results)
+    }
+
+    /// Fetch tx receipts in a batch rpc call
+    pub async fn get_tx_receipts_batch(
+        &self,
+        hashes: &[TxHash],
+    ) -> Result<Vec<TransactionReceipt>, ProviderError> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        
+        let mut batch = self.client.new_batch();
+        let mut request_futures = Vec::new();
+
+        for hash in hashes {
+            let call = batch.add_call("eth_getTransactionReceipt", &(hash))?;
             request_futures.push(call);
         }
 

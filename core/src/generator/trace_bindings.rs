@@ -19,6 +19,7 @@ use crate::{
     },
     types::code::Code,
 };
+use crate::indexer::native_transfer::get_native_transfer_abi_items;
 
 pub fn trace_abigen_contract_name(contract_name: &str) -> String {
     format!("Rindexer{}Gen", contract_name)
@@ -297,12 +298,13 @@ fn generate_trace_callback_structs_code(
                     // transfer events with 3 indexed topics
                     let result: Vec<{name}Result> = events.into_iter()
                         .filter_map(|item| {{
-                            item.decoded_data.downcast::<{struct_data}>()
-                                .ok()
-                                .map(|arc| {struct_result} {{
-                                    event_data: (*arc).clone(),
-                                    tx_information: item.tx_information
-                                }})
+                             match item.data {{
+                                TraceResultData::{name}(d) => Some({struct_result} {{
+                                    event_data: {struct_data}::from(d),
+                                    tx_information: item.tx_information,
+                                }}),
+                                _ => None,
+                            }}
                         }})
                         .collect();
 
@@ -453,10 +455,11 @@ fn generate_trace_bindings_code(
             {csv_import}
             generate_random_id,
             FutureExt,
+            indexer::native_transfer::{{NativeTransfer, RawTransaction}},
             event::{{
                 callback_registry::{{
                     TraceCallbackRegistry, TraceCallbackRegistryInformation, TraceCallbackResult,
-                    TraceResult, TxInformation, HasTxInformation
+                    TraceResultData, TraceResult, TxInformation, HasTxInformation,
                 }},
                 contract_setup::{{TraceInformation, NetworkTrace}},
             }},
@@ -469,6 +472,32 @@ fn generate_trace_bindings_code(
         }};
         use super::super::super::super::typings::networks::get_provider_cache_for_network;
         {postgres_import}
+
+        impl From<NativeTransfer> for NativeTransferData {{
+            fn from(value: NativeTransfer) -> Self {{
+                Self {{
+                    from: value.from,
+                    to: value.to,
+                    value: value.value,
+                }}
+            }}
+        }}
+
+        impl From<RawTransaction> for RawTransactionData {{
+            fn from(value: RawTransaction) -> Self {{
+                Self {{
+                    from: value.from,
+                    to: value.to,
+                    value: value.value,
+                    blockTimestamp: value.block_timestamp,
+                    nonce: value.nonce,
+                    gas: value.gas,
+                    gasPrice: value.gas_price,
+                    maxFeePerGas: value.max_fee_per_gas,
+                    maxPriorityFeePerGas: value.max_priority_fee_per_gas,
+                }}
+            }}
+        }}
 
         {structs}
 
@@ -626,95 +655,6 @@ pub enum GenerateTraceBindingsError {
     ParamType(#[from] ParamTypeError),
 }
 
-/// Minimal changes by hardcoding the "mocked" native transfer Event abi as per erc20 standard.
-fn get_native_transfer_abi_items() -> Vec<ABIItem> {
-    vec![
-        ABIItem {
-            inputs: vec![
-                ABIInput {
-                    indexed: Some(true),
-                    name: "from".to_string(),
-                    type_: "address".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(true),
-                    name: "to".to_string(),
-                    type_: "address".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(false),
-                    name: "value".to_string(),
-                    type_: "uint256".to_string(),
-                    components: None,
-                },
-            ],
-            name: "NativeTransfer".to_string(),
-            type_: "event".to_string(),
-        },
-        ABIItem {
-            inputs: vec![
-                ABIInput {
-                    indexed: Some(true),
-                    name: "from".to_string(),
-                    type_: "address".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(true),
-                    name: "to".to_string(),
-                    type_: "address".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(false),
-                    name: "value".to_string(),
-                    type_: "uint256".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(false),
-                    name: "block_timestamp".to_string(),
-                    type_: "uint256".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(false),
-                    name: "nonce".to_string(),
-                    type_: "uint256".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(false),
-                    name: "gas".to_string(),
-                    type_: "uint256".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(false),
-                    name: "gasPrice".to_string(),
-                    type_: "uint256".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(false),
-                    name: "maxFeePerGas".to_string(),
-                    type_: "uint256".to_string(),
-                    components: None,
-                },
-                ABIInput {
-                    indexed: Some(false),
-                    name: "maxPriorityFeePerGas".to_string(),
-                    type_: "uint256".to_string(),
-                    components: None,
-                },
-            ],
-            name: "RawTransaction".to_string(),
-            type_: "event".to_string(),
-        },
-    ]
-}
 
 pub fn generate_trace_bindings(
     project_path: &Path,

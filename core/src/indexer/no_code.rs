@@ -50,6 +50,7 @@ use crate::{
     types::core::LogParam,
     AsyncCsvAppender, FutureExt, IndexingDetails, StartDetails, StartNoCodeDetails,
 };
+use crate::event::callback_registry::TraceResultData;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SetupNoCodeError {
@@ -274,10 +275,10 @@ fn no_code_callback(params: Arc<NoCodeCallbackParams>) -> EventCallbacks {
                     .into_iter()
                     .cloned()
                     .filter_map(|item| {
-                        item.decoded_data
-                            .downcast::<NativeTransfer>()
-                            .ok()
-                            .map(|data| (data, item.tx_information))
+                        match item.data {
+                            TraceResultData::NativeTransfer(data) => Some((data, item.tx_information)),
+                            TraceResultData::RawTransaction(_) => None
+                        }
                     })
                     .map(|(result, tx_information)| {
                         let log_params = vec![

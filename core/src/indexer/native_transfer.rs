@@ -12,6 +12,7 @@ use serde::Serialize;
 use tokio::{sync::mpsc, time::sleep};
 use tracing::{debug, error, info, warn};
 
+use crate::abi::ABIInput;
 use crate::event::contract_setup::ContractInformation;
 use crate::indexer::native_transfer;
 use crate::{
@@ -26,6 +27,7 @@ use crate::{
     },
     manifest::native_transfer::TraceProcessingMethod,
     provider::{JsonRpcCachedProvider, ProviderError},
+    ABIItem,
 };
 
 /// An imaginary contract name to ensure native transfer "debug trace" indexing is compatible
@@ -86,33 +88,33 @@ pub const NATIVE_TRANSFER_ABI: &str = r#"
             },
             {
                 "indexed": false,
-                "name": "block_timestamp",
-                "type": "uint256"
+                "name": "blockTimestamp",
+                "type": "uint64"
             },
             {
                 "indexed": false,
                 "name": "nonce",
-                "type": "uint256"
+                "type": "uint64"
             },
             {
                 "indexed": false,
                 "name": "gas",
-                "type": "uint256"
+                "type": "uint64"
             },
             {
                 "indexed": false,
                 "name": "gasPrice",
-                "type": "uint256"
+                "type": "uint128"
             },
             {
                 "indexed": false,
                 "name": "maxFeePerGas",
-                "type": "uint256"
+                "type": "uint128"
             },
             {
                 "indexed": false,
                 "name": "maxPriorityFeePerGas",
-                "type": "uint256"
+                "type": "uint128"
             }
         ],
         "name": "RawTransaction",
@@ -121,9 +123,99 @@ pub const NATIVE_TRANSFER_ABI: &str = r#"
 ]
 "#;
 
+/// Minimal changes by hardcoding the "mocked" native transfer Event abi as per erc20 standard.
+pub fn get_native_transfer_abi_items() -> Vec<ABIItem> {
+    vec![
+        ABIItem {
+            inputs: vec![
+                ABIInput {
+                    indexed: Some(true),
+                    name: "from".to_string(),
+                    type_: "address".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(true),
+                    name: "to".to_string(),
+                    type_: "address".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "value".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+            ],
+            name: "NativeTransfer".to_string(),
+            type_: "event".to_string(),
+        },
+        ABIItem {
+            inputs: vec![
+                ABIInput {
+                    indexed: Some(true),
+                    name: "from".to_string(),
+                    type_: "address".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(true),
+                    name: "to".to_string(),
+                    type_: "address".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "value".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "block_timestamp".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "nonce".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "gas".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "gasPrice".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "maxFeePerGas".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+                ABIInput {
+                    indexed: Some(false),
+                    name: "maxPriorityFeePerGas".to_string(),
+                    type_: "uint256".to_string(),
+                    components: None,
+                },
+            ],
+            name: "RawTransaction".to_string(),
+            type_: "event".to_string(),
+        },
+    ]
+}
+
 /// Refer to [`NATIVE_TRANSFER_ABI`] as an imaginary associated ABI for this Native Transfer
 /// "event" struct.
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NativeTransfer {
     pub from: Address,
     pub to: Address,
@@ -131,18 +223,18 @@ pub struct NativeTransfer {
 }
 
 /// Refer to [`NATIVE_TRANSFER_ABI`] as an imaginary associated ABI for this RawTransaction struct.
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawTransaction {
     pub from: Address,
-    pub to: Option<Address>,
+    pub to: Address,
     pub value: U256,
-    pub block_timestamp: BlockTimestamp,
+    pub block_timestamp: u64,
     pub nonce: u64,
     pub gas: u64,
-    pub gas_price: Option<u128>,
-    pub max_fee_per_gas: Option<u128>,
-    pub max_priority_fee_per_gas: Option<u128>,
+    pub gas_price: u128,
+    pub max_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
 }
 
 /// Push a range of blocks to the back-pressured channel and block producer when full.
@@ -212,7 +304,7 @@ pub async fn native_transfer_block_fetch(
             }
             Ok(None) => {}
             Err(e) => {
-                error!("Error fetching '{}' block traces: {}", network, e.to_string());
+                error!("Error fetching '{}' blocks: {}", network, e.to_string());
                 sleep(Duration::from_secs(1)).await;
             }
         }
@@ -223,7 +315,7 @@ pub async fn native_transfer_block_processor(
     network_name: String,
     networks_count: usize,
     provider: Arc<JsonRpcCachedProvider>,
-    config: Arc<TraceProcessingConfig>,
+    configs: Vec<Arc<TraceProcessingConfig>>,
     mut block_rx: mpsc::Receiver<U64>,
 ) -> Result<(), ProcessEventError> {
     let initial_concurrent_requests = 3;
@@ -244,7 +336,7 @@ pub async fn native_transfer_block_processor(
             provider.clone(),
             &buffer[..recv],
             &network_name,
-            config.clone(),
+            &configs,
         )
         .await;
 
@@ -266,13 +358,13 @@ pub async fn native_transfer_block_processor(
 
             if is_rate_limit_error {
                 error!(
-                    "Rate-limited 429 '{}' block traces. Retrying in 1 second: {}",
+                    "Rate-limited 429 '{}' block requests. Retrying in 1 second: {}",
                     network_name,
                     e.to_string(),
                 );
             } else {
                 warn!(
-                                "Could not process '{}' block traces. Likely too early for {}..{}, Retrying in 1 second: {}",
+                                "Could not process '{}' block requests. Likely too early for {}..{}, Retrying in 1 second: {}",
                                 network_name,
                                 &buffer.first().map(|n| n.as_limbs()[0]).unwrap_or_else(|| 0),
                                 &buffer.last().map(|n| n.as_limbs()[0]).unwrap_or_else(|| 0),
@@ -315,27 +407,27 @@ pub async fn native_transfer_block_consumer(
     provider: Arc<JsonRpcCachedProvider>,
     block_numbers: &[U64],
     network_name: &str,
-    config: Arc<TraceProcessingConfig>,
+    configs: &[Arc<TraceProcessingConfig>],
 ) -> Result<(), ProcessEventError> {
     let blocks = provider.get_block_by_number_batch(block_numbers, true).await?;
     let (from_block, to_block) = block_numbers
         .iter()
         .fold((U64::MAX, U64::ZERO), |(min, max), &num| (min.min(num), max.max(num)));
 
-    let raw_transactions = blocks
-        .clone()
-        .into_iter()
-        .flat_map(|b| b.transactions.into_transactions().map(move |tx| (b.header.timestamp, tx)))
-        .map(|(ts, tx)| {
-            TraceResult::new_raw_transaction(&tx, ts, network_name, from_block, to_block)
-        })
-        .collect::<Vec<_>>();
+    // let raw_transactions = blocks
+    //     .clone()
+    //     .into_iter()
+    //     .flat_map(|b| b.transactions.into_transactions().map(move |tx| (b.header.timestamp, tx)))
+    //     .map(|(ts, tx)| {
+    //         TraceResult::new_raw_transaction(&tx, ts, network_name, from_block, to_block)
+    //     })
+    //     .collect::<Vec<_>>();
 
     let native_transfers = blocks
         .into_iter()
         .flat_map(|b| b.transactions.into_transactions().map(move |tx| (b.header.timestamp, tx)))
         .filter_map(|(ts, tx)| {
-            let is_empty_input = tx.input() == &Bytes::new();
+            let is_empty_input = tx.input().is_empty();
             let is_value_zero = tx.value().is_zero();
             let is_to_present = tx.to().is_some();
 
@@ -361,10 +453,21 @@ pub async fn native_transfer_block_consumer(
         return Ok(());
     }
 
-    indexing_event_processing();
-    config.trigger_event(native_transfers).await;
-    config.trigger_event(raw_transactions).await;
-    evm_trace_update_progress_and_last_synced_task(config, to_block, indexing_event_processed);
+    for config in configs.iter() {
+        indexing_event_processing();
+
+        match config.event_name.as_str() {
+            "NativeTransfer" => config.trigger_event(native_transfers.clone()).await,
+            // "RawTransaction" => config.trigger_event(raw_transactions.clone()).await,
+            _ => unimplemented!("Unsupported event name"),
+        }
+
+        evm_trace_update_progress_and_last_synced_task(
+            config.clone(),
+            to_block,
+            indexing_event_processed,
+        );
+    }
 
     Ok(())
 }

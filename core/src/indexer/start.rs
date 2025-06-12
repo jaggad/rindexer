@@ -1,8 +1,8 @@
-use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
-
 use alloy::primitives::U64;
 use alloy::transports::{RpcError, TransportErrorKind};
 use futures::future::try_join_all;
+use std::collections::HashMap;
+use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
 use tokio::{
     join,
     sync::Semaphore,
@@ -162,6 +162,7 @@ async fn get_start_end_block(
     Ok((start_block, end_block, indexing_distance_from_head))
 }
 
+/// Entry point for starting the trace indexing process.
 pub async fn start_indexing_traces(
     manifest: &Manifest,
     project_path: &Path,
@@ -173,21 +174,25 @@ pub async fn start_indexing_traces(
         return Ok(vec![]);
     }
 
-    let mut non_blocking_process_events = Vec::new();
     let trace_progress_state =
         IndexingEventsProgressState::monitor_traces(&trace_registry.events).await;
 
+    let mut network_configs: HashMap<String, Vec<Arc<TraceProcessingConfig>>> = HashMap::new();
+    let mut network_providers: HashMap<String, Arc<JsonRpcCachedProvider>> = HashMap::new();
+    let mut safe_index_distance: HashMap<String, U64> = HashMap::new();
+
     for event in trace_registry.events.iter() {
-        println!("Indexing trace for event: {}", event.event_name);
         let stream_details = manifest
             .contracts
             .iter()
             .find(|c| c.name == event.contract_name)
             .and_then(|c| c.streams.as_ref());
 
-        let networks_count = event.trace_information.details.len();
-
         for network in event.trace_information.details.iter() {
+            network_providers
+                .entry(network.network.clone())
+                .or_insert_with(|| network.cached_provider.clone());
+
             let sync_config = SyncConfig {
                 project_path,
                 database: &database,
@@ -200,8 +205,6 @@ pub async fn start_indexing_traces(
                 network: &network.network,
             };
 
-            let (block_tx, block_rx) = tokio::sync::mpsc::channel(2048);
-            let network_name = network.network.clone();
             let (start_block, end_block, indexing_distance_from_head) = get_start_end_block(
                 network.cached_provider.clone(),
                 network.start_block,
@@ -213,6 +216,8 @@ pub async fn start_indexing_traces(
             )
             .await?;
 
+            safe_index_distance.insert(network.network.clone(), indexing_distance_from_head);
+
             let config = Arc::new(TraceProcessingConfig {
                 id: event.id.to_string(),
                 project_path: project_path.to_path_buf(),
@@ -221,7 +226,7 @@ pub async fn start_indexing_traces(
                 indexer_name: event.indexer_name.clone(),
                 contract_name: NATIVE_TRANSFER_CONTRACT_NAME.to_string(),
                 event_name: event.event_name.to_string(),
-                network: network_name.to_string(),
+                network: network.network.clone(),
                 progress: trace_progress_state.clone(),
                 database: database.clone(),
                 csv_details: None,
@@ -230,33 +235,53 @@ pub async fn start_indexing_traces(
                 stream_last_synced_block_file_path: None,
             });
 
-            let native_transfer_handle = tokio::spawn(native_transfer_block_fetch(
-                network.cached_provider.clone(),
-                block_tx,
-                start_block,
-                network.end_block,
-                indexing_distance_from_head,
-                network_name.clone(),
-            ));
-
-            non_blocking_process_events.push(native_transfer_handle);
-
-            let provider = network.cached_provider.clone();
-            let config = config.clone();
-
-            let native_transfer_consumer_handle = tokio::spawn(native_transfer_block_processor(
-                network_name.clone(),
-                networks_count,
-                provider,
-                config,
-                block_rx,
-            ));
-
-            non_blocking_process_events.push(native_transfer_consumer_handle);
+            // Add the config to the corresponding network group.
+            network_configs.entry(network.network.clone()).or_default().push(config);
         }
     }
 
-    Ok(non_blocking_process_events)
+    let mut join_handles = Vec::new();
+    let networks_count = network_configs.len();
+
+    for (network_name, configs) in network_configs {
+        let provider = network_providers.get(&network_name).unwrap().clone();
+
+        let start_block = configs.iter().map(|c| c.start_block).min().unwrap_or_default();
+        let end_block = configs.iter().map(|c| c.end_block).max();
+
+        let reorg_safe_distance =
+            safe_index_distance.get(&network_name).cloned().unwrap_or(U64::ZERO);
+
+        let latest_block = provider.get_block_number().await?;
+        let indexing_distance_from_head = if end_block.is_none() {
+            reorg_safe_distance
+        } else {
+            latest_block.saturating_sub(end_block.unwrap())
+        };
+
+        let (block_tx, block_rx) = tokio::sync::mpsc::channel(2048);
+        let fetcher_handle = tokio::spawn(native_transfer_block_fetch(
+            provider.clone(),
+            block_tx,
+            start_block,
+            end_block,
+            indexing_distance_from_head,
+            network_name.clone(),
+        ));
+
+        join_handles.push(fetcher_handle);
+
+        let processor_handle = tokio::spawn(native_transfer_block_processor(
+            network_name.clone(),
+            networks_count,
+            provider,
+            configs,
+            block_rx,
+        ));
+        join_handles.push(processor_handle);
+    }
+
+    Ok(join_handles)
 }
 
 pub async fn start_indexing_contract_events(
