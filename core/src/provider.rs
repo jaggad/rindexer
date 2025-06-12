@@ -363,7 +363,7 @@ impl JsonRpcCachedProvider {
         let mut request_futures = Vec::new();
 
         for &block_num in block_numbers {
-            let params = (BlockNumberOrTag::Number(block_num.as_limbs()[1]), include_txs);
+            let params = (BlockNumberOrTag::Number(block_num.as_limbs()[0]), include_txs);
             let call = batch.add_call("eth_getBlockByNumber", &params)?;
             request_futures.push(call);
         }

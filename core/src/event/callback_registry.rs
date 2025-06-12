@@ -1,5 +1,8 @@
 use std::{any::Any, sync::Arc, time::Duration};
 
+use alloy::consensus::Transaction as _;
+use alloy::network::TransactionResponse;
+use alloy::rpc::types::{Block, Transaction};
 use alloy::{
     primitives::{Address, BlockHash, Bytes, TxHash, B256, U256, U64},
     rpc::types::{
@@ -12,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::{debug, error, info};
 
+use crate::indexer::native_transfer::{NativeTransfer, RawTransaction};
 use crate::{
     event::contract_setup::{ContractInformation, NetworkContract, TraceInformation},
     indexer::start::ProcessedNetworkContract,
@@ -219,16 +223,14 @@ impl EventCallbackRegistry {
 
 #[derive(Debug, Clone)]
 pub struct TraceResult {
-    pub from: Address,
-    pub to: Address,
-    pub value: U256,
+    pub decoded_data: Arc<dyn Any + Send + Sync>,
     pub tx_information: TxInformation,
     pub found_in_request: LogFoundInRequest,
 }
 
 impl TraceResult {
-    /// Create a "NativeTransfer" TraceResult for sinking and streaming.
-    pub fn new_native_transfer(
+    /// Create a "NativeTransfer" TraceResult from a debug or trace call.
+    pub fn new_debug_native_transfer(
         action: &CallAction,
         trace: &LocalizedTransactionTrace,
         network: &str,
@@ -243,9 +245,11 @@ impl TraceResult {
         }
 
         Self {
-            from: action.from,
-            to: action.to,
-            value: action.value,
+            decoded_data: Arc::new(NativeTransfer {
+                from: action.from,
+                to: action.to,
+                value: action.value,
+            }),
             tx_information: TxInformation {
                 network: network.to_string(),
                 address: Address::ZERO,
@@ -255,6 +259,75 @@ impl TraceResult {
                 transaction_hash: trace.transaction_hash.unwrap_or(TxHash::ZERO),
                 block_hash: trace.block_hash.unwrap_or(BlockHash::ZERO),
                 transaction_index: U64::from(trace.transaction_position.unwrap_or(0)),
+                log_index: U256::from(0),
+            },
+            found_in_request: LogFoundInRequest { from_block: start_block, to_block: end_block },
+        }
+    }
+
+    /// Create a "NativeTransfer" TraceResult from a `eth_getBlockByNumber` Transaction.
+    pub fn new_native_transfer(
+        tx: Transaction,
+        ts: u64,
+        to: Address,
+        network: &str,
+        start_block: U64,
+        end_block: U64,
+    ) -> Self {
+        Self {
+            decoded_data: Arc::new(NativeTransfer { to, from: tx.from(), value: tx.value() }),
+            tx_information: TxInformation {
+                network: network.to_string(),
+                address: Address::ZERO,
+                block_number: tx
+                    .block_number
+                    .map(U64::from)
+                    .expect("block_number should be present"),
+                block_timestamp: Some(U256::from(ts)),
+                transaction_hash: tx.tx_hash(),
+                block_hash: tx.block_hash.expect("block_hash should be present"),
+                transaction_index: U64::from(
+                    tx.transaction_index.expect("transaction_index should be present"),
+                ),
+                log_index: U256::from(0),
+            },
+            found_in_request: LogFoundInRequest { from_block: start_block, to_block: end_block },
+        }
+    }
+
+    /// Create a "NativeTransfer" TraceResult for sinking and streaming.
+    pub fn new_raw_transaction(
+        tx: &Transaction,
+        ts: u64,
+        network: &str,
+        start_block: U64,
+        end_block: U64,
+    ) -> Self {
+        Self {
+            decoded_data: Arc::new(RawTransaction {
+                from: tx.from(),
+                to: tx.to(),
+                value: tx.value(),
+                block_timestamp: ts,
+                nonce: tx.nonce(),
+                gas: tx.gas_limit(), // TODO: Unsure if correct mapping
+                gas_price: TransactionResponse::gas_price(tx),
+                max_fee_per_gas: TransactionResponse::max_fee_per_gas(tx),
+                max_priority_fee_per_gas: tx.max_priority_fee_per_gas(),
+            }),
+            tx_information: TxInformation {
+                network: network.to_string(),
+                address: Address::ZERO,
+                block_number: tx
+                    .block_number
+                    .map(U64::from)
+                    .expect("block_number should be present"),
+                block_timestamp: None,
+                transaction_hash: tx.tx_hash(),
+                block_hash: tx.block_hash.expect("block_hash should be present"),
+                transaction_index: U64::from(
+                    tx.transaction_index.expect("transaction_index should be present"),
+                ),
                 log_index: U256::from(0),
             },
             found_in_request: LogFoundInRequest { from_block: start_block, to_block: end_block },

@@ -1,5 +1,8 @@
-use std::{collections::VecDeque, ops::RangeInclusive, sync::Arc, time::Duration};
+use std::{cmp, collections::VecDeque, ops::RangeInclusive, sync::Arc, time::Duration};
 
+use alloy::consensus::Transaction;
+use alloy::primitives::BlockTimestamp;
+use alloy::transports::{RpcError, TransportErrorKind};
 use alloy::{
     primitives::{Address, Bytes, U256, U64},
     rpc::types::trace::parity::{Action, LocalizedTransactionTrace},
@@ -7,8 +10,10 @@ use alloy::{
 use futures::future::try_join_all;
 use serde::Serialize;
 use tokio::{sync::mpsc, time::sleep};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
+use crate::event::contract_setup::ContractInformation;
+use crate::indexer::native_transfer;
 use crate::{
     event::{
         callback_registry::{TraceResult, TxInformation},
@@ -123,7 +128,21 @@ pub struct NativeTransfer {
     pub from: Address,
     pub to: Address,
     pub value: U256,
-    pub transaction_information: TxInformation,
+}
+
+/// Refer to [`NATIVE_TRANSFER_ABI`] as an imaginary associated ABI for this RawTransaction struct.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawTransaction {
+    pub from: Address,
+    pub to: Option<Address>,
+    pub value: U256,
+    pub block_timestamp: BlockTimestamp,
+    pub nonce: u64,
+    pub gas: u64,
+    pub gas_price: Option<u128>,
+    pub max_fee_per_gas: Option<u128>,
+    pub max_priority_fee_per_gas: Option<u128>,
 }
 
 /// Push a range of blocks to the back-pressured channel and block producer when full.
@@ -200,6 +219,84 @@ pub async fn native_transfer_block_fetch(
     }
 }
 
+pub async fn native_transfer_block_processor(
+    network_name: String,
+    networks_count: usize,
+    provider: Arc<JsonRpcCachedProvider>,
+    config: Arc<TraceProcessingConfig>,
+    mut block_rx: mpsc::Receiver<U64>,
+) -> Result<(), ProcessEventError> {
+    let initial_concurrent_requests = 3;
+    let limit_concurrent_requests = 400 / networks_count;
+
+    let mut max_concurrent_requests: usize = initial_concurrent_requests;
+    let mut buffer: Vec<U64> = Vec::with_capacity(max_concurrent_requests);
+
+    loop {
+        let recv = block_rx.recv_many(&mut buffer, max_concurrent_requests).await;
+
+        if recv == 0 {
+            sleep(Duration::from_secs(1)).await;
+            continue;
+        }
+
+        let processed_block = native_transfer_block_consumer(
+            provider.clone(),
+            &buffer[..recv],
+            &network_name,
+            config.clone(),
+        )
+        .await;
+
+        // If this has an error we need to not and reconsume the blocks. We don't have
+        // to worry about double-publish because the failure point is on the provider
+        // call itself, which is before publish.
+        if let Err(e) = processed_block {
+            // On error, half the block query range. We want a slow increase in
+            // concurrency and an aggressive backoff.
+            max_concurrent_requests = std::cmp::max(1, max_concurrent_requests / 2);
+
+            let is_rate_limit_error = matches!(&e, ProcessEventError::ProviderCallError(
+                ProviderError::RequestFailed(
+                    RpcError::Transport(
+                        TransportErrorKind::HttpError(http_err)
+                    )
+                )) if http_err.status == 429
+            );
+
+            if is_rate_limit_error {
+                error!(
+                    "Rate-limited 429 '{}' block traces. Retrying in 1 second: {}",
+                    network_name,
+                    e.to_string(),
+                );
+            } else {
+                warn!(
+                                "Could not process '{}' block traces. Likely too early for {}..{}, Retrying in 1 second: {}",
+                                network_name,
+                                &buffer.first().map(|n| n.as_limbs()[0]).unwrap_or_else(|| 0),
+                                &buffer.last().map(|n| n.as_limbs()[0]).unwrap_or_else(|| 0),
+                                e.to_string(),
+                            );
+            }
+
+            sleep(Duration::from_secs(1)).await;
+
+            continue;
+        } else {
+            buffer.clear();
+
+            // A random chance of increasing the request count helps us not overload
+            // the ratelimit too rapidly across multi-network trace indexing and have a
+            // slow ramp-up time.
+            if rand::random_bool(0.1) {
+                max_concurrent_requests =
+                    (max_concurrent_requests + 1).min(limit_concurrent_requests);
+            }
+        };
+    }
+}
+
 async fn provider_call(
     provider: Arc<JsonRpcCachedProvider>,
     config: &TraceProcessingConfig,
@@ -220,13 +317,76 @@ pub async fn native_transfer_block_consumer(
     network_name: &str,
     config: Arc<TraceProcessingConfig>,
 ) -> Result<(), ProcessEventError> {
+    let blocks = provider.get_block_by_number_batch(block_numbers, true).await?;
+    let (from_block, to_block) = block_numbers
+        .iter()
+        .fold((U64::MAX, U64::ZERO), |(min, max), &num| (min.min(num), max.max(num)));
+
+    let raw_transactions = blocks
+        .clone()
+        .into_iter()
+        .flat_map(|b| b.transactions.into_transactions().map(move |tx| (b.header.timestamp, tx)))
+        .map(|(ts, tx)| {
+            TraceResult::new_raw_transaction(&tx, ts, network_name, from_block, to_block)
+        })
+        .collect::<Vec<_>>();
+
+    let native_transfers = blocks
+        .into_iter()
+        .flat_map(|b| b.transactions.into_transactions().map(move |tx| (b.header.timestamp, tx)))
+        .filter_map(|(ts, tx)| {
+            let is_empty_input = tx.input() == &Bytes::new();
+            let is_value_zero = tx.value().is_zero();
+            let is_to_present = tx.to().is_some();
+
+            if is_to_present && is_empty_input && !is_value_zero {
+                let to = tx.to().clone().unwrap();
+                let native_transfer = TraceResult::new_native_transfer(
+                    tx,
+                    ts,
+                    to,
+                    network_name,
+                    from_block,
+                    to_block,
+                );
+
+                Some(native_transfer)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if native_transfers.is_empty() {
+        return Ok(());
+    }
+
+    indexing_event_processing();
+    config.trigger_event(native_transfers).await;
+    config.trigger_event(raw_transactions).await;
+    evm_trace_update_progress_and_last_synced_task(config, to_block, indexing_event_processed);
+
+    Ok(())
+}
+
+/// Indexing native transfers if debug or trace indexing is enabled.
+///
+/// NOTE: This is currently unused as we have temporarily migrated to exclusively using
+/// `eth_getBlockByNumber` calls instead, this is being retained for posterity should we
+/// choose to continue to support `debug` and `trace` based native transfer indexing.
+#[deprecated]
+pub async fn native_transfer_block_consumer_debug(
+    provider: Arc<JsonRpcCachedProvider>,
+    block_numbers: &[U64],
+    network_name: &str,
+    config: Arc<TraceProcessingConfig>,
+) -> Result<(), ProcessEventError> {
     let trace_futures: Vec<_> =
         block_numbers.iter().map(|n| provider_call(provider.clone(), &config, *n)).collect();
     let trace_calls = try_join_all(trace_futures).await?;
-    let (from_block, to_block) =
-        block_numbers.iter().fold((U64::MAX, U64::ZERO), |(min, max), &num| {
-            (std::cmp::min(min, num), std::cmp::max(max, num))
-        });
+    let (from_block, to_block) = block_numbers
+        .iter()
+        .fold((U64::MAX, U64::ZERO), |(min, max), &num| (cmp::min(min, num), cmp::max(max, num)));
 
     // We're not ready to support complete "trace" indexing for zksync chains. So we can
     // effectively only get what we need for native transfers by removing calls to "system
@@ -272,7 +432,7 @@ pub async fn native_transfer_block_consumer(
             let is_native_transfer = has_value && no_input && !is_zksync_system_transfer;
 
             if is_native_transfer {
-                Some(TraceResult::new_native_transfer(
+                Some(TraceResult::new_debug_native_transfer(
                     action,
                     &trace,
                     network_name,

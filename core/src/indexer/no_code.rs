@@ -13,7 +13,7 @@ use serde_json::Value;
 use tokio_postgres::types::Type as PgType;
 use tracing::{debug, error, info, warn};
 
-use super::native_transfer::{NATIVE_TRANSFER_ABI, NATIVE_TRANSFER_CONTRACT_NAME};
+use super::native_transfer::{NativeTransfer, NATIVE_TRANSFER_ABI, NATIVE_TRANSFER_CONTRACT_NAME};
 use crate::{
     abi::{ABIItem, CreateCsvFileForEvent, EventInfo, ParamTypeError, ReadAbiError},
     chat::ChatClients,
@@ -271,8 +271,15 @@ fn no_code_callback(params: Arc<NoCodeCallbackParams>) -> EventCallbacks {
                     })
                     .collect::<Vec<_>>(),
                 CallbackResult::Trace(events) => events
-                    .iter()
-                    .map(|result| {
+                    .into_iter()
+                    .cloned()
+                    .filter_map(|item| {
+                        item.decoded_data
+                            .downcast::<NativeTransfer>()
+                            .ok()
+                            .map(|data| (data, item.tx_information))
+                    })
+                    .map(|(result, tx_information)| {
                         let log_params = vec![
                             LogParam {
                                 name: "from".to_string(),
@@ -288,13 +295,13 @@ fn no_code_callback(params: Arc<NoCodeCallbackParams>) -> EventCallbacks {
                             },
                         ];
 
-                        let address = result.tx_information.address;
-                        let transaction_hash = result.tx_information.transaction_hash;
-                        let block_number = result.tx_information.block_number;
-                        let block_hash = result.tx_information.block_hash;
-                        let network = result.tx_information.network.to_string();
-                        let transaction_index = result.tx_information.transaction_index;
-                        let log_index = result.tx_information.log_index;
+                        let address = tx_information.address;
+                        let transaction_hash = tx_information.transaction_hash;
+                        let block_number = tx_information.block_number;
+                        let block_hash = tx_information.block_hash;
+                        let network = tx_information.network.to_string();
+                        let transaction_index = tx_information.transaction_index;
+                        let log_index = tx_information.log_index;
 
                         let event_parameters: Vec<EthereumSqlTypeWrapper> =
                             map_log_params_to_ethereum_wrapper(
