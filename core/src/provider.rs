@@ -1,4 +1,5 @@
 use alloy::network::{AnyNetwork, AnyRpcBlock, AnyTransactionReceipt};
+use alloy::providers::layers::{CallBatchLayer, CallBatchProvider};
 use alloy::rpc::types::TransactionReceipt;
 use alloy::{
     eips::{BlockId, BlockNumberOrTag},
@@ -45,6 +46,7 @@ use url::Url;
 use crate::manifest::network::BlockPollFrequency;
 use crate::{event::RindexerEventFilter, manifest::core::Manifest};
 
+/// Maximum RPC batching size available for the provider.
 const CHUNK_SIZE: usize = 1000;
 
 /// An alias type for a complex alloy Provider
@@ -542,6 +544,8 @@ pub async fn create_client(
     let http = Http::with_client(client_with_auth, rpc_url);
     let retry_layer = RetryBackoffLayer::new(5000, 500, compute_units_per_second.unwrap_or(660));
     let rpc_client = RpcClient::builder().layer(retry_layer).transport(http, false);
+
+    // Consider adding `layer(CallBatchLayer::new().wait(Duration::from_millis(500)))`
     let provider =
         ProviderBuilder::new().network::<AnyNetwork>().connect_client(rpc_client.clone());
 
