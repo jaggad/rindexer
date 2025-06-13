@@ -15,6 +15,7 @@ use tracing::{debug, error, info, warn};
 use crate::abi::ABIInput;
 use crate::event::contract_setup::ContractInformation;
 use crate::indexer::native_transfer;
+use crate::provider::RPC_CHUNK_SIZE;
 use crate::{
     event::{
         callback_registry::{TraceResult, TxInformation},
@@ -313,13 +314,20 @@ pub async fn native_transfer_block_fetch(
 
 pub async fn native_transfer_block_processor(
     network_name: String,
-    networks_count: usize,
+    _networks_count: usize,
     provider: Arc<JsonRpcCachedProvider>,
     configs: Vec<Arc<TraceProcessingConfig>>,
     mut block_rx: mpsc::Receiver<U64>,
 ) -> Result<(), ProcessEventError> {
-    let initial_concurrent_requests = 3;
-    let limit_concurrent_requests = 400 / networks_count;
+    let is_rcp_batchable =
+        configs.iter().all(|x| x.method == TraceProcessingMethod::EthGetBlockByNumber);
+
+    // Set the concurrency used to make requests based on the method.
+    //
+    // Currently, `eth_getBlockByNumber` is a single JSON-RPC batch, and others are individual
+    // network calls so can be treated differently.
+    let (initial_concurrent_requests, limit_concurrent_requests) =
+        if is_rcp_batchable { (RPC_CHUNK_SIZE / 2, RPC_CHUNK_SIZE) } else { (5, 25) };
 
     let mut max_concurrent_requests: usize = initial_concurrent_requests;
     let mut buffer: Vec<U64> = Vec::with_capacity(max_concurrent_requests);
@@ -346,7 +354,7 @@ pub async fn native_transfer_block_processor(
         if let Err(e) = processed_block {
             // On error, half the block query range. We want a slow increase in
             // concurrency and an aggressive backoff.
-            max_concurrent_requests = std::cmp::max(1, max_concurrent_requests / 2);
+            max_concurrent_requests = cmp::max(1, max_concurrent_requests / 2);
 
             let is_rate_limit_error = matches!(&e, ProcessEventError::ProviderCallError(
                 ProviderError::RequestFailed(
@@ -364,12 +372,12 @@ pub async fn native_transfer_block_processor(
                 );
             } else {
                 warn!(
-                                "Could not process '{}' block requests. Likely too early for {}..{}, Retrying in 1 second: {}",
-                                network_name,
-                                &buffer.first().map(|n| n.as_limbs()[0]).unwrap_or_else(|| 0),
-                                &buffer.last().map(|n| n.as_limbs()[0]).unwrap_or_else(|| 0),
-                                e.to_string(),
-                            );
+                    "Could not process '{}' block requests. Likely too early for {}..{}, Retrying in 1 second: {}",
+                    network_name,
+                    &buffer.first().map(|n| n.as_limbs()[0]).unwrap_or_else(|| 0),
+                    &buffer.last().map(|n| n.as_limbs()[0]).unwrap_or_else(|| 0),
+                    e.to_string(),
+                );
             }
 
             sleep(Duration::from_secs(1)).await;
@@ -380,11 +388,8 @@ pub async fn native_transfer_block_processor(
 
             // A random chance of increasing the request count helps us not overload
             // the ratelimit too rapidly across multi-network trace indexing and have a
-            // slow ramp-up time.
-            if rand::random_bool(0.1) {
-                max_concurrent_requests =
-                    (max_concurrent_requests + 1).min(limit_concurrent_requests);
-            }
+            // slow ramp-up time (if rpc batching isn't available)
+            max_concurrent_requests = (max_concurrent_requests + 1).min(limit_concurrent_requests);
         };
     }
 }

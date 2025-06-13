@@ -210,6 +210,7 @@ impl IndexingEventsProgressState {
         for event in &mut self.events {
             if event.id == id {
                 if event.progress < 1.0 {
+                    // 25437, 15700000
                     if event.syncing_to_block > event.last_synced_block {
                         let total_blocks: u64 = event
                             .syncing_to_block

@@ -47,7 +47,7 @@ use crate::manifest::network::BlockPollFrequency;
 use crate::{event::RindexerEventFilter, manifest::core::Manifest};
 
 /// Maximum RPC batching size available for the provider.
-const CHUNK_SIZE: usize = 1000;
+pub const RPC_CHUNK_SIZE: usize = 1000;
 
 /// An alias type for a complex alloy Provider
 pub type RindexerProvider = FillProvider<
@@ -381,7 +381,7 @@ impl JsonRpcCachedProvider {
 
         // Create a vector of futures, where each future processes one chunk.
         let futures = block_numbers
-            .chunks(CHUNK_SIZE)
+            .chunks(RPC_CHUNK_SIZE)
             .map(|chunk| {
                 // Clone the client for each concurrent task. Arc makes this cheap.
                 let client = self.client.clone();
@@ -432,7 +432,7 @@ impl JsonRpcCachedProvider {
 
         // Create a vector of futures, where each future processes one chunk.
         let futures = hashes
-            .chunks(CHUNK_SIZE)
+            .chunks(RPC_CHUNK_SIZE)
             .map(|chunk| {
                 // Clone the client for each concurrent task. Arc makes this cheap.
                 let client = self.client.clone();
@@ -540,9 +540,12 @@ pub async fn create_client(
         RetryClientError::HttpProviderCantBeCreated(rpc_url.to_string(), e.to_string())
     })?;
 
-    let client_with_auth = Client::builder().default_headers(custom_headers).build()?;
+    let client_with_auth = Client::builder()
+        .default_headers(custom_headers)
+        .timeout(Duration::from_secs(30))
+        .build()?;
     let http = Http::with_client(client_with_auth, rpc_url);
-    let retry_layer = RetryBackoffLayer::new(5000, 500, compute_units_per_second.unwrap_or(660));
+    let retry_layer = RetryBackoffLayer::new(5000, 2000, compute_units_per_second.unwrap_or(660));
     let rpc_client = RpcClient::builder().layer(retry_layer).transport(http, false);
 
     // Consider adding `layer(CallBatchLayer::new().wait(Duration::from_millis(500)))`
