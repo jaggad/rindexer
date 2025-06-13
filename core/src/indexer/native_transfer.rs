@@ -327,12 +327,13 @@ pub async fn native_transfer_block_processor(
     // Currently, `eth_getBlockByNumber` is a single JSON-RPC batch, and others are individual
     // network calls so can be treated differently.
     let (initial_concurrent_requests, limit_concurrent_requests) =
-        if is_rcp_batchable { (RPC_CHUNK_SIZE / 2, RPC_CHUNK_SIZE) } else { (5, 25) };
+        if is_rcp_batchable { (5, RPC_CHUNK_SIZE / 2) } else { (5, 25) };
 
     let mut max_concurrent_requests: usize = initial_concurrent_requests;
     let mut buffer: Vec<U64> = Vec::with_capacity(max_concurrent_requests);
 
     loop {
+        sleep(Duration::from_millis(100)).await;
         let recv = block_rx.recv_many(&mut buffer, max_concurrent_requests).await;
 
         if recv == 0 {
