@@ -54,6 +54,7 @@ pub enum EthereumSqlTypeWrapper {
     // 256-bit integers
     U256(U256),
     U256Numeric(U256),
+    U256NumericNullable(Option<U256>),
     U256Nullable(U256),
     U256Bytes(U256),
     U256BytesNullable(U256),
@@ -156,6 +157,7 @@ impl EthereumSqlTypeWrapper {
             EthereumSqlTypeWrapper::U256(_) => "U256",
             EthereumSqlTypeWrapper::U256Nullable(_) => "U256Nullable",
             EthereumSqlTypeWrapper::U256Numeric(_) => "U256Numeric",
+            EthereumSqlTypeWrapper::U256NumericNullable(_) => "U256NumericNullable",
             EthereumSqlTypeWrapper::U256Bytes(_) => "U256Bytes",
             EthereumSqlTypeWrapper::U256BytesNullable(_) => "U256BytesNullable",
             EthereumSqlTypeWrapper::I256(_) => "I256",
@@ -255,7 +257,8 @@ impl EthereumSqlTypeWrapper {
                 PgType::VARCHAR
             }
             // 256-bit unsigned integers opt in numeric representation (numeric(78))
-            EthereumSqlTypeWrapper::U256Numeric(_) => PgType::NUMERIC,
+            EthereumSqlTypeWrapper::U256Numeric(_)
+            | EthereumSqlTypeWrapper::U256NumericNullable(_) => PgType::NUMERIC,
             EthereumSqlTypeWrapper::U256Bytes(_) | EthereumSqlTypeWrapper::U256BytesNullable(_) => {
                 PgType::BYTEA
             }
@@ -548,6 +551,13 @@ impl ToSql for EthereumSqlTypeWrapper {
                     return Ok(IsNull::Yes);
                 }
                 String::to_sql(&value.to_string(), ty, out)
+            }
+            EthereumSqlTypeWrapper::U256NumericNullable(value) => {
+                if let Some(v) = value {
+                    Self::write_u256_numeric_to_postgres(*v, false, out)
+                } else {
+                    Ok(IsNull::Yes)
+                }
             }
             EthereumSqlTypeWrapper::U256Numeric(value) => {
                 Self::write_u256_numeric_to_postgres(*value, false, out)
@@ -1595,6 +1605,9 @@ pub fn map_ethereum_wrapper_to_json(
                     | EthereumSqlTypeWrapper::U256Nullable(u)
                     | EthereumSqlTypeWrapper::U256BytesNullable(u) => {
                         json!(u.to_string())
+                    }
+                    EthereumSqlTypeWrapper::U256NumericNullable(u) => {
+                        json!(u.map(|v| v.to_string()))
                     }
                     EthereumSqlTypeWrapper::VecU256(u256s)
                     | EthereumSqlTypeWrapper::VecU256Numeric(u256s)
