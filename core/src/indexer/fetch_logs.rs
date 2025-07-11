@@ -164,6 +164,8 @@ async fn fetch_historic_logs_stream(
 ) -> Option<ProcessHistoricLogsStreamResult> {
     let from_block = current_filter.from_block();
     let to_block = current_filter.to_block();
+    
+    // Option 1: Sample fetch this range, persist in memory
 
     debug!(
         "{}::{} - {} - Process historic events - blocks: {} - {}",
