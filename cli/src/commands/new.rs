@@ -12,7 +12,6 @@ use alloy::{
     rpc::types::ValueOrArray,
 };
 use rindexer::manifest::config::Config;
-use rindexer::manifest::timestamps::Timestamps;
 use rindexer::{
     generator::{build::generate_rust_project, generate_docker_file},
     manifest::{
@@ -25,6 +24,7 @@ use rindexer::{
     },
     write_file, StringOrArray, WriteFileError,
 };
+use rindexer::manifest::timestamps::Timestamps;
 
 fn generate_rindexer_rust_project(project_path: &Path) {
     let generated = generate_rust_project(project_path);
@@ -194,7 +194,10 @@ pub fn handle_new_command(
         description: project_description,
         repository,
         project_type,
-        timestamps: Timestamps { enabled: false, sample_rate: None },
+        timestamps: Timestamps {
+            enabled: false,
+            sample_rate: None
+        },
         config: Config { buffer: None, callback_concurrency: None },
         networks: vec![Network {
             name: "ethereum".to_string(),

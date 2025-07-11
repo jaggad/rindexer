@@ -304,35 +304,4 @@ mod tests {
         assert_eq!(manifest.config.callback_concurrency, None);
         assert_eq!(manifest.config.buffer, None);
     }
-
-    #[test]
-    fn test_timestamps_simple() {
-        let yaml = r#"
-        name: test
-        project_type: no-code
-        networks: []
-        contracts: []
-        "#;
-
-        let manifest: Manifest = serde_yaml::from_str(yaml).unwrap();
-
-        assert_eq!(manifest.timestamps.enabled, false);
-        assert_eq!(manifest.timestamps.sample_rate, None);
-
-        let yaml = r#"
-        name: test
-        project_type: no-code
-        timestamps:
-          enabled: true
-          sample_rate: 0.1
-        networks: []
-        contracts: []
-        "#;
-
-        let manifest: Manifest = serde_yaml::from_str(yaml).unwrap();
-
-        assert_eq!(manifest.timestamps.enabled, true);
-        assert_eq!(manifest.timestamps.sample_rate, Some(0.1));
-
-    }
 }

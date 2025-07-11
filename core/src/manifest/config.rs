@@ -1,11 +1,4 @@
-use alloy_primitives::BlockNumber;
 use serde::{Deserialize, Serialize};
-
-///
-pub struct TimestampConfig {
-    enabled: Option<bool>,
-    sample_rate: Option<f32>,
-}
 
 /// Advanced config options for tuning rindexer beyond its default settings.
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]

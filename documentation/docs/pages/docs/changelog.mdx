@@ -5,6 +5,42 @@
 
 ### Features
 -------------------------------------------------
+
+- Indexing with `eth_getBlockByNumber` for more efficiency (but still retain all debug/trace logic for future options)
+- Add a `Nullable` Numeric256 SQL type, and `Nullable` DateTime SQL type
+- Add tx receipt endpoint as useful prep work for raw transaction indexing option
+- Add an ever-so-slightly backpressured queue per "network-event" for super fair scheduling, decreased write contention on the database, and improved memory utilisation, can use 1/4 of memory with no throughput drop in some cases.
+
+### Bug fixes
+-------------------------------------------------
+
+- Use correct provider base which is `AnyProvider` that can handle optimism, rollups, and all evm chain style responses.
+- Misc tweaks to optimise how this native transfer fetching is done with batching, and pass rpc provider to allow for better batching in other endpoints
+- Remove the permits system entirely, it's had some serious problems with fair distribution (where some events would consistenyl take more permits than others)
+- We weren't writing to the db if no events were found in a block range... this was a major problem for highly infrequent events as rindexer wouldn't write the "last seen block", fixed.
+- Fixed a pretty major bug with the "optimal log parsing regex" (where the BlockNumber::from_str() wasn't actually parsing the hex, so it silently failed and used sub-optimal fallbacks)
+- Fix indexer codegen to use correct names and types, as well as fix formatting problems where rustfmt couldn't parse the nesting we were doing
+- Other memory optimisations
+
+### Breaking changes
+-------------------------------------------------
+
+## Releases
+-------------------------------------------------
+
+all release branches are deployed through `release/VERSION_NUMBER` branches
+
+# 0.20.0-beta - 10th July 2025
+
+github branch - https://github.com/joshstevens19/rindexer/tree/release/0.20.0
+
+- linux binary - https://rindexer.xyz/releases/linux-amd64/0.20.0/rindexer_linux-amd64.tar.gz
+- mac apple silicon binary - https://rindexer.xyz/releases/darwin-arm64/0.20.0/rindexer_darwin-arm64.tar.gz
+- mac apple intel binary - https://rindexer.xyz/releases/darwin-amd64/0.20.0/rindexer_darwin-amd64.tar.gz
+- windows binary - https://rindexer/releases.xyz/win32-amd64/0.20.0/rindexer_win32-amd64.zip
+
+### Features
+-------------------------------------------------
 - feat: support reth natively in rindexer https://rindexer.xyz/docs/start-building/create-new-project/reth-mode + https://rindexer.xyz/docs/advanced/using-reth-exex
 
 - Indexing with `eth_getBlockByNumber` for more efficiency (but still retain all debug/trace logic for future options)
@@ -23,14 +59,6 @@
 - Fixed a pretty major bug with the "optimal log parsing regex" (where the BlockNumber::from_str() wasn't actually parsing the hex, so it silently failed and used sub-optimal fallbacks)
 - Fix indexer codegen to use correct names and types, as well as fix formatting problems where rustfmt couldn't parse the nesting we were doing
 - Other memory optimisations
-
-### Breaking changes
--------------------------------------------------
-
-## Releases
--------------------------------------------------
-
-all release branches are deployed through `release/VERSION_NUMBER` branches
 
 # 0.19.1-beta - 17th June 2025
 
