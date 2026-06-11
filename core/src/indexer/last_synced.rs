@@ -316,13 +316,9 @@ pub async fn update_progress_and_last_synced_task(
             generate_indexer_contract_schema_name(&config.indexer_name(), &config.contract_name());
         let table_name = generate_internal_event_table_name(&schema, &config.event_name());
         let network = &config.network_contract().network;
-        // run these as two separate auto-commit statements rather than one
-        // batch_execute. a multi-statement simple query runs in a single
-        // implicit transaction, holding the per-event cursor row lock and the
-        // shared latest_block row lock together. with every event stream
-        // doing this concurrently it deadlocks against anything acquiring
-        // those locks in a different order (observed in production against
-        // the index drop/recreate path which takes AccessExclusiveLock).
+        // two separate statements on purpose. a single batch_execute runs in
+        // one implicit transaction, and holding the per-event cursor lock and
+        // the shared latest_block lock together deadlocks under concurrency
         let cursor_query = format!(
             "UPDATE rindexer_internal.{table_name} SET last_synced_block = {to_block} WHERE network = '{network}' AND {to_block} > last_synced_block"
         );

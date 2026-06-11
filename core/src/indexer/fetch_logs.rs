@@ -1108,6 +1108,12 @@ async fn live_indexing_stream(
     let mut heartbeat = HeartbeatTracker::new(Duration::from_secs(300));
     let target_iteration_duration = Duration::from_millis(200);
 
+    // the went-back condition persists across poll iterations, so log at most
+    // once per interval and carry a suppressed count instead of spamming
+    const RPC_WENT_BACK_LOG_INTERVAL: Duration = Duration::from_secs(30);
+    let mut rpc_went_back_last_logged: Option<Instant> = None;
+    let mut rpc_went_back_suppressed: u64 = 0;
+
     // Channel for reth-provided reorg signals (feature-gated, None for HTTP RPC).
     // The spawned task converts ChainStateNotification → ReorgInfo and sends here;
     // the main loop try_recv()s to trigger the same recovery codepath as cache-based detection.
@@ -1218,7 +1224,9 @@ async fn live_indexing_stream(
                     match heartbeat.tick(latest_tip) {
                         HeartbeatAction::Silent => {}
                         HeartbeatAction::Alive => {
-                            info!(
+                            // debug, not info. one line per stream per interval is
+                            // burst spam, and liveness is already covered by metrics
+                            debug!(
                                 "{} - {} - Indexing alive - chain tip {}, last processed block {}",
                                 info_log_name,
                                 IndexingEventProgressStatus::live_log(),
@@ -1285,9 +1293,8 @@ async fn live_indexing_stream(
                         }
                     }
 
-                    // a shrunk to-block cap at or below last_seen can never be fetched
-                    // again, so keeping it would pin this loop in the no-new-blocks
-                    // branch forever; drop it as stale
+                    // a cap at or below last_seen would pin this loop in the
+                    // no-new-blocks branch forever, drop it as stale
                     if log_response_to_large_to_block
                         .is_some_and(|cap| cap <= last_seen_block_number)
                     {
@@ -1321,24 +1328,38 @@ async fn live_indexing_stream(
                                 let is_outside_reorg_range = block_distance
                                     > reorg_safe_distance_for_chain(cached_provider.chain().id());
 
-                                // it should never get under normal conditions outside the reorg range,
-                                // therefore, we log an error as means RCP state is not in sync with the blockchain
-                                if is_outside_reorg_range {
-                                    error!(
-                                        "{} - {} - LIVE INDEXING STREAM - RPC has gone back on latest block: rpc returned {}, last seen: {}",
-                                        info_log_name,
-                                        IndexingEventProgressStatus::live_log(),
-                                        latest_block_number,
-                                        from_block
-                                    );
+                                let should_log = rpc_went_back_last_logged
+                                    .is_none_or(|at| at.elapsed() >= RPC_WENT_BACK_LOG_INTERVAL);
+                                if should_log {
+                                    let suppressed = rpc_went_back_suppressed;
+                                    rpc_went_back_last_logged = Some(Instant::now());
+                                    rpc_went_back_suppressed = 0;
+
+                                    // it should never get under normal conditions outside the reorg range,
+                                    // therefore, we log an error as means RCP state is not in sync with the blockchain
+                                    if is_outside_reorg_range {
+                                        error!(
+                                            "{} - {} - LIVE INDEXING STREAM - RPC has gone back on latest block: rpc returned {}, last seen: {} ({} similar suppressed in last {}s)",
+                                            info_log_name,
+                                            IndexingEventProgressStatus::live_log(),
+                                            latest_block_number,
+                                            from_block,
+                                            suppressed,
+                                            RPC_WENT_BACK_LOG_INTERVAL.as_secs()
+                                        );
+                                    } else {
+                                        info!(
+                                            "{} - {} - LIVE INDEXING STREAM - RPC has gone back on latest block: rpc returned {}, last seen: {} ({} similar suppressed in last {}s)",
+                                            info_log_name,
+                                            IndexingEventProgressStatus::live_log(),
+                                            latest_block_number,
+                                            from_block,
+                                            suppressed,
+                                            RPC_WENT_BACK_LOG_INTERVAL.as_secs()
+                                        );
+                                    }
                                 } else {
-                                    info!(
-                                        "{} - {} - LIVE INDEXING STREAM - RPC has gone back on latest block: rpc returned {}, last seen: {}",
-                                        info_log_name,
-                                        IndexingEventProgressStatus::live_log(),
-                                        latest_block_number,
-                                        from_block
-                                    );
+                                    rpc_went_back_suppressed += 1;
                                 }
                             } else {
                                 debug!(
@@ -1399,8 +1420,7 @@ async fn live_indexing_stream(
                                 current_filter =
                                     current_filter.set_from_block(to_block + U64::from(1));
                                 last_seen_block_number = to_block;
-                                // the capped range completed without a fetch; clear it like
-                                // the successful get_logs path does
+                                // the capped range completed, clear it like the get_logs path does
                                 log_response_to_large_to_block = None;
                             } else {
                                 current_filter = current_filter.set_to_block(to_block);
