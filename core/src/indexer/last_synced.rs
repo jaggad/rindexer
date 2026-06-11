@@ -316,15 +316,21 @@ pub async fn update_progress_and_last_synced_task(
             generate_indexer_contract_schema_name(&config.indexer_name(), &config.contract_name());
         let table_name = generate_internal_event_table_name(&schema, &config.event_name());
         let network = &config.network_contract().network;
-        let query = format!(
-            "UPDATE rindexer_internal.{table_name} SET last_synced_block = {to_block} WHERE network = '{network}' AND {to_block} > last_synced_block;
-             UPDATE rindexer_internal.latest_block SET block = {latest} WHERE network = '{network}' AND {latest} > block;"
+        // two separate statements on purpose. a single batch_execute runs in
+        // one implicit transaction, and holding the per-event cursor lock and
+        // the shared latest_block lock together deadlocks under concurrency
+        let cursor_query = format!(
+            "UPDATE rindexer_internal.{table_name} SET last_synced_block = {to_block} WHERE network = '{network}' AND {to_block} > last_synced_block"
         );
-
-        let result = postgres.batch_execute(&query).await;
-
-        if let Err(e) = result {
+        if let Err(e) = postgres.batch_execute(&cursor_query).await {
             error!("Error updating db last synced block: {:?}", e);
+        }
+
+        let latest_query = format!(
+            "UPDATE rindexer_internal.latest_block SET block = {latest} WHERE network = '{network}' AND {latest} > block"
+        );
+        if let Err(e) = postgres.batch_execute(&latest_query).await {
+            error!("Error updating db latest block: {:?}", e);
         }
     } else if let Some(clickhouse) = &config.clickhouse() {
         let schema =
